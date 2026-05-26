@@ -1,9 +1,18 @@
 import time
 
 import can
+import pytest
 import j1939
 from test_helpers.feeder import Feeder
 from test_helpers.conftest import feeder
+
+
+@pytest.fixture()
+def etp_feeder():
+    """Feeder with a higher max_cmdt_packets so ETP tests don't need 256+ CTS rounds."""
+    f = Feeder(max_cmdt_packets=255)
+    yield f
+    f.stop()
 
 
 def receive(feeder):
@@ -200,6 +209,116 @@ def test_add_bus_filters(feeder):
     ]
     feeder.ecu.add_bus_filters(filters)
     assert feeder.ecu._bus.filters == filters
+
+def _etp_pgn_bytes(pgn):
+    return [pgn & 0xFF, (pgn >> 8) & 0xFF, (pgn >> 16) & 0xFF]
+
+
+def _etp_size_bytes(size):
+    return [size & 0xFF, (size >> 8) & 0xFF, (size >> 16) & 0xFF, (size >> 24) & 0xFF]
+
+
+def _etp_offset_bytes(value):
+    return [value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF]
+
+
+def test_peer_to_peer_receive_etp(etp_feeder):
+    """ISO 11783-3 ETP receive: a destination-specific message > 1785 bytes.
+
+    1786 bytes = 256 ETP.DT packets (last packet carries 1 data byte + 6 pad bytes).
+    With max_cmdt_packets=255 the receiver requests 255 packets in the first
+    burst and 1 in the second.
+    """
+    feeder = etp_feeder
+    feeder.accept_all_messages()
+
+    src = 0x01
+    dst = 0x02
+    pgn = 0xDF00  # PDU1 destination-specific PGN (PF=223)
+    message_size = 1786
+    num_packets = (message_size + 6) // 7  # 256
+    payload = [(i & 0xFF) for i in range(message_size)]
+
+    cm_id_rx = 0x00C80000 | (dst << 8) | src       # peer -> us
+    cm_id_tx = 0x1CC80000 | (src << 8) | dst       # us  -> peer (priority 7)
+    dt_id_rx = 0x00C70000 | (dst << 8) | src       # peer -> us
+
+    messages = []
+    messages.append((Feeder.MsgType.CANRX, cm_id_rx,
+                     [20] + _etp_size_bytes(message_size) + _etp_pgn_bytes(pgn), 0.0))
+    messages.append((Feeder.MsgType.CANTX, cm_id_tx,
+                     [21, 255] + _etp_offset_bytes(1) + _etp_pgn_bytes(pgn), 0.0))
+    messages.append((Feeder.MsgType.CANRX, cm_id_rx,
+                     [22, 255] + _etp_offset_bytes(0) + _etp_pgn_bytes(pgn), 0.0))
+    for seq in range(1, 256):
+        chunk = payload[(seq - 1) * 7:seq * 7]
+        messages.append((Feeder.MsgType.CANRX, dt_id_rx, [seq] + chunk, 0.0))
+    # Burst 2: request 1 more packet
+    messages.append((Feeder.MsgType.CANTX, cm_id_tx,
+                     [21, 1] + _etp_offset_bytes(256) + _etp_pgn_bytes(pgn), 0.0))
+    messages.append((Feeder.MsgType.CANRX, cm_id_rx,
+                     [22, 1] + _etp_offset_bytes(255) + _etp_pgn_bytes(pgn), 0.0))
+    last = payload[(num_packets - 1) * 7:]
+    last += [0xFF] * (7 - len(last))
+    messages.append((Feeder.MsgType.CANRX, dt_id_rx, [1] + last, 0.0))
+    # Final EOMA from us
+    messages.append((Feeder.MsgType.CANTX, cm_id_tx,
+                     [23] + _etp_size_bytes(message_size) + _etp_pgn_bytes(pgn), 0.0))
+
+    feeder.can_messages = messages
+    feeder.pdus = [(Feeder.MsgType.PDU, pgn, payload)]
+    feeder.receive()
+
+
+def test_peer_to_peer_send_etp(etp_feeder):
+    """ISO 11783-3 ETP send: a destination-specific message > 1785 bytes."""
+    feeder = etp_feeder
+    feeder.accept_all_messages()
+
+    src = 0x90
+    dst = 0x9B
+    pgn = 0xDF00  # PDU1 destination-specific PGN (PF=223)
+    message_size = 1786
+    num_packets = (message_size + 6) // 7  # 256
+    payload = [(i & 0xFF) for i in range(message_size)]
+
+    cm_id_tx = 0x18C80000 | (dst << 8) | src   # us -> peer; priority 6 (per send_pgn)
+    cm_id_tx_p7 = 0x1CC80000 | (dst << 8) | src
+    cm_id_rx_p7 = 0x1CC80000 | (src << 8) | dst
+    dt_id_tx = 0x1CC70000 | (dst << 8) | src   # us -> peer (priority 7)
+
+    messages = []
+    # RTS uses caller-supplied priority (6 in feeder.send)
+    messages.append((Feeder.MsgType.CANTX, cm_id_tx,
+                     [20] + _etp_size_bytes(message_size) + _etp_pgn_bytes(pgn), 0.0))
+    # Peer responds with CTS for the full first burst
+    messages.append((Feeder.MsgType.CANRX, cm_id_rx_p7,
+                     [21, 255] + _etp_offset_bytes(1) + _etp_pgn_bytes(pgn), 0.0))
+    # We answer with DPO then 255 DTs
+    messages.append((Feeder.MsgType.CANTX, cm_id_tx_p7,
+                     [22, 255] + _etp_offset_bytes(0) + _etp_pgn_bytes(pgn), 0.0))
+    for seq in range(1, 256):
+        chunk = payload[(seq - 1) * 7:seq * 7]
+        messages.append((Feeder.MsgType.CANTX, dt_id_tx, [seq] + chunk, 0.0))
+    # Peer requests the final packet
+    messages.append((Feeder.MsgType.CANRX, cm_id_rx_p7,
+                     [21, 1] + _etp_offset_bytes(256) + _etp_pgn_bytes(pgn), 0.0))
+    messages.append((Feeder.MsgType.CANTX, cm_id_tx_p7,
+                     [22, 1] + _etp_offset_bytes(255) + _etp_pgn_bytes(pgn), 0.0))
+    last = payload[(num_packets - 1) * 7:]
+    last += [0xFF] * (7 - len(last))
+    messages.append((Feeder.MsgType.CANTX, dt_id_tx, [1] + last, 0.0))
+    # Peer's EOMA closes the session
+    messages.append((Feeder.MsgType.CANRX, cm_id_rx_p7,
+                     [23] + _etp_size_bytes(message_size) + _etp_pgn_bytes(pgn), 0.0))
+
+    feeder.can_messages = messages
+    # send_pgn ultimately reports EOMA reception via subscriber callback with the embedded PGN
+    feeder.pdus = [(Feeder.MsgType.PDU, pgn, None)]
+
+    pdu = (Feeder.MsgType.PDU, pgn, payload)
+    feeder.send(pdu, src, dst)
+
 
 def test_subscribe(feeder):
     """

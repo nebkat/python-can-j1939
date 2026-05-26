@@ -38,14 +38,15 @@ class Feeder:
         CANTX = 1
         PDU = 2
 
-    def __init__(self):
+    def __init__(self, **ecu_kwargs):
         self.STOP_THREAD = object()
 
         self.message_queue = queue.Queue()
         self.message_thread = threading.Thread(target=self._async_can_feeder)
         self.message_thread.start()
         # redirect the send_message from the can bus to our simulation
-        self.ecu = j1939.ElectronicControlUnit(send_message=self._send_message)
+        ecu_kwargs.setdefault('send_message', self._send_message)
+        self.ecu = j1939.ElectronicControlUnit(**ecu_kwargs)
 
     def _async_can_feeder(self):
         """Asynchronous feeder"""

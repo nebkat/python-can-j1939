@@ -1,11 +1,15 @@
 from .parameter_group_number import ParameterGroupNumber
 from .message_id import MessageId
+from .iso11783_etp import ISO11783_ETP
 import logging
 import time
 
 logger = logging.getLogger(__name__)
 
 class J1939_21:
+    # Maximum size of a TP session (SAE J1939-21 / ISO 11783-3 6.10)
+    TP_MAX_MESSAGE_SIZE = 1785
+
     class ConnectionMode:
         RTS = 16
         CTS = 17
@@ -64,6 +68,15 @@ class J1939_21:
         self.__notify_subscribers = notify_subscribers
         self.__ecu_is_message_acceptable = ecu_is_message_acceptable
 
+        # ISO 11783-3 Extended Transport Protocol (for messages > 1785 bytes)
+        self.etp = ISO11783_ETP(
+            send_message=send_message,
+            job_thread_wakeup=job_thread_wakeup,
+            notify_subscribers=notify_subscribers,
+            max_cmdt_packets=max_cmdt_packets,
+            minimum_dt_interval=minimum_tp_rts_cts_dt_interval,
+        )
+
     def add_ca(self, ca):
         self._cas.append(ca)
 
@@ -114,6 +127,11 @@ class J1939_21:
 
             # if the PF is between 240 and 255, the message can only be broadcast
             if dest_address == ParameterGroupNumber.Address.GLOBAL:
+                # BAM is bounded by TP (ISO 11783-3 6.10) - no broadcast variant for ETP
+                if message_size > self.TP_MAX_MESSAGE_SIZE:
+                    logger.error("Broadcast message size %d exceeds TP limit (%d); ETP has no broadcast variant",
+                                 message_size, self.TP_MAX_MESSAGE_SIZE)
+                    return False
                 # send BAM
                 self.__send_tp_bam(src_address, priority, pgn.value, message_size, num_packets)
 
@@ -130,6 +148,10 @@ class J1939_21:
                         'dest_address' : ParameterGroupNumber.Address.GLOBAL,
                         'next_packet_to_send' : 0,
                     }
+            elif message_size > self.TP_MAX_MESSAGE_SIZE:
+                # ISO 11783-3 6.11 Extended Transport Protocol
+                if not self.etp.start_send(src_address, pdu_specific, priority, pgn.value, data):
+                    return False
             else:
                 # send RTS/CTS
                 pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
@@ -258,6 +280,11 @@ class J1939_21:
                     else:
                         logger.critical("unknown SendBufferState %d", buf['state'])
                         del self._snd_buffer[bufid]
+
+        # ETP runs its own send/receive state machine alongside TP.
+        etp_wakeup = self.etp.async_job_thread(now)
+        if etp_wakeup < next_wakeup:
+            next_wakeup = etp_wakeup
 
         return next_wakeup
 
@@ -521,6 +548,10 @@ class J1939_21:
             self._process_tp_cm(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.DATATRANSFER:
             self._process_tp_dt(mid, dest_address, data, timestamp)
+        elif pgn_value == ParameterGroupNumber.PGN.ETP_CM:
+            self.etp.process_cm(mid, dest_address, data, timestamp)
+        elif pgn_value == ParameterGroupNumber.PGN.ETP_DT:
+            self.etp.process_dt(mid, dest_address, data, timestamp)
         else:
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
             return
