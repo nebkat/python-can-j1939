@@ -69,9 +69,9 @@ class ISO11783_ETP:
 
     def __init__(self, send_message, job_thread_wakeup, notify_subscribers,
                  max_cmdt_packets, minimum_dt_interval):
-        self._send_message = send_message
-        self._job_thread_wakeup = job_thread_wakeup
-        self._notify_subscribers = notify_subscribers
+        self.__send_message = send_message
+        self.__job_thread_wakeup = job_thread_wakeup
+        self.__notify_subscribers = notify_subscribers
         self._max_cmdt_packets = max_cmdt_packets
         self._minimum_dt_interval = minimum_dt_interval
 
@@ -118,7 +118,7 @@ class ISO11783_ETP:
             'next_wait_on_cts': 0,
             'data_packet_offset': 0,
         }
-        self._send_rts(src_address, dest_address, priority, cm_pgn, message_size)
+        self.__send_rts(src_address, dest_address, priority, cm_pgn, message_size)
         return True
 
     def async_job_thread(self, now):
@@ -138,7 +138,7 @@ class ISO11783_ETP:
                 continue
             logger.info("ETP receive timeout src 0x%02X dst 0x%02X",
                         buf['src_address'], buf['dest_address'])
-            self._send_abort(buf['dest_address'], buf['src_address'],
+            self.__send_abort(buf['dest_address'], buf['src_address'],
                              self.AbortReason.TIMEOUT, buf['pgn'])
             del self._rcv_buffer[bufid]
 
@@ -154,14 +154,14 @@ class ISO11783_ETP:
             if state == self.SendState.WAITING_CTS:
                 logger.info("ETP WAITING_CTS timeout src 0x%02X dst 0x%02X",
                             buf['src_address'], buf['dest_address'])
-                self._send_abort(buf['src_address'], buf['dest_address'],
+                self.__send_abort(buf['src_address'], buf['dest_address'],
                                  self.AbortReason.TIMEOUT, buf['pgn'])
                 del self._snd_buffer[bufid]
             elif state == self.SendState.SENDING_DPO:
                 # Sequence numbers restart at 1 for each new DPO group
                 # (ISO 11783-3 6.11.5.5).
                 burst_count = buf['next_wait_on_cts'] - buf['next_packet_to_send'] + 1
-                self._send_dpo(buf['src_address'], buf['dest_address'],
+                self.__send_dpo(buf['src_address'], buf['dest_address'],
                                burst_count, buf['data_packet_offset'], buf['pgn'])
                 buf['state'] = self.SendState.SENDING_IN_CTS
                 buf['burst_seq'] = 0
@@ -189,7 +189,7 @@ class ISO11783_ETP:
                     elif self._minimum_dt_interval is not None:
                         buf['deadline'] = time.time() + self._minimum_dt_interval
                         should_break = True
-                    self._send_dt(buf['src_address'], buf['dest_address'], payload)
+                    self.__send_dt(buf['src_address'], buf['dest_address'], payload)
                     if should_break:
                         break
                 if next_wakeup > buf['deadline']:
@@ -231,14 +231,14 @@ class ISO11783_ETP:
         rcv = self._rcv_buffer[buffer_hash]
 
         if rcv['expected_dpo']:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.UNEXPECTED_DT, rcv['pgn'])
             del self._rcv_buffer[buffer_hash]
             return
 
         rcv['burst_received'] += 1
         if sequence_number != rcv['burst_received']:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.BAD_SEQUENCE, rcv['pgn'])
             del self._rcv_buffer[buffer_hash]
             return
@@ -253,11 +253,11 @@ class ISO11783_ETP:
         if absolute_packet >= rcv['num_packages']:
             if rcv['burst_received'] == rcv['dpo_packets'] or absolute_packet * 7 >= rcv['message_size']:
                 rcv['data'] = rcv['data'][:rcv['message_size']]
-                self._send_eom_ack(dest_address, src_address, rcv['message_size'], rcv['pgn'])
-                self._notify_subscribers(mid.priority, rcv['pgn'], src_address,
+                self.__send_eom_ack(dest_address, src_address, rcv['message_size'], rcv['pgn'])
+                self.__notify_subscribers(mid.priority, rcv['pgn'], src_address,
                                          dest_address, timestamp, rcv['data'])
                 del self._rcv_buffer[buffer_hash]
-                self._job_thread_wakeup()
+                self.__job_thread_wakeup()
                 return
 
         if rcv['burst_received'] >= rcv['dpo_packets']:
@@ -267,13 +267,13 @@ class ISO11783_ETP:
             rcv['dpo_packets'] = burst
             rcv['burst_received'] = 0
             rcv['expected_dpo'] = True
-            self._send_cts(dest_address, src_address, burst, absolute_packet + 1, rcv['pgn'])
+            self.__send_cts(dest_address, src_address, burst, absolute_packet + 1, rcv['pgn'])
             rcv['deadline'] = time.time() + self.Timeout.T2
-            self._job_thread_wakeup()
+            self.__job_thread_wakeup()
             return
 
         rcv['deadline'] = time.time() + self.Timeout.T1
-        self._job_thread_wakeup()
+        self.__job_thread_wakeup()
 
     # --- ETP.CM handlers ----------------------------------------------------
 
@@ -281,11 +281,11 @@ class ISO11783_ETP:
         message_size = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24)
         buffer_hash = self._buffer_hash(src_address, dest_address)
         if buffer_hash in self._rcv_buffer:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.BUSY, pgn_value)
             return
         if message_size < self.MIN_MESSAGE_SIZE or message_size > self.MAX_MESSAGE_SIZE:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.ANY_OTHER_REASON, pgn_value)
             return
         num_packages = (message_size + 6) // 7
@@ -304,29 +304,29 @@ class ISO11783_ETP:
             'dpo_packets': 0,
             'burst_received': 0,
         }
-        self._send_cts(dest_address, src_address, burst, 1, pgn_value)
-        self._job_thread_wakeup()
+        self.__send_cts(dest_address, src_address, burst, 1, pgn_value)
+        self.__job_thread_wakeup()
 
     def _handle_cts(self, src_address, dest_address, data, pgn_value):
         num_packets = data[1]
         next_packet_number = data[2] | (data[3] << 8) | (data[4] << 16)
         buffer_hash = self._buffer_hash(dest_address, src_address)
         if buffer_hash not in self._snd_buffer:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.RESOURCES, pgn_value)
             return
         buf = self._snd_buffer[buffer_hash]
         if buf['pgn'] != pgn_value:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.UNEXPECTED_CTS_PGN, pgn_value)
             return
         if num_packets == 0:
             # Hold the connection open (ISO 11783-3 6.11.5.4)
             buf['deadline'] = time.time() + self.Timeout.Th
-            self._job_thread_wakeup()
+            self.__job_thread_wakeup()
             return
         if next_packet_number < 1 or next_packet_number > buf['num_packages']:
-            self._send_abort(buf['src_address'], buf['dest_address'],
+            self.__send_abort(buf['src_address'], buf['dest_address'],
                              self.AbortReason.CTS_REQUESTED_PACKETS_EXCEEDS_SIZE,
                              pgn_value)
             del self._snd_buffer[buffer_hash]
@@ -339,34 +339,34 @@ class ISO11783_ETP:
         buf['data_packet_offset'] = next_packet_number - 1
         buf['state'] = self.SendState.SENDING_DPO
         buf['deadline'] = time.time()
-        self._job_thread_wakeup()
+        self.__job_thread_wakeup()
 
     def _handle_dpo(self, src_address, dest_address, data, pgn_value):
         num_packets = data[1]
         data_packet_offset = data[2] | (data[3] << 8) | (data[4] << 16)
         buffer_hash = self._buffer_hash(src_address, dest_address)
         if buffer_hash not in self._rcv_buffer:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.UNEXPECTED_DPO, pgn_value)
             return
         rcv = self._rcv_buffer[buffer_hash]
         if rcv['pgn'] != pgn_value:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.UNEXPECTED_DPO_PGN, pgn_value)
             del self._rcv_buffer[buffer_hash]
             return
         if not rcv['expected_dpo']:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.UNEXPECTED_DPO, pgn_value)
             del self._rcv_buffer[buffer_hash]
             return
         if num_packets > rcv['cts_num_packets']:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.DPO_NUM_PACKETS_GT_CTS, pgn_value)
             del self._rcv_buffer[buffer_hash]
             return
         if data_packet_offset != rcv['cts_dpo']:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.BAD_DPO_OFFSET, pgn_value)
             del self._rcv_buffer[buffer_hash]
             return
@@ -374,19 +374,19 @@ class ISO11783_ETP:
         rcv['burst_received'] = 0
         rcv['expected_dpo'] = False
         rcv['deadline'] = time.time() + self.Timeout.T1
-        self._job_thread_wakeup()
+        self.__job_thread_wakeup()
 
     def _handle_eom_ack(self, mid, src_address, dest_address, timestamp, data, pgn_value):
         buffer_hash = self._buffer_hash(dest_address, src_address)
         if buffer_hash not in self._snd_buffer:
-            self._send_abort(dest_address, src_address,
+            self.__send_abort(dest_address, src_address,
                              self.AbortReason.RESOURCES, pgn_value)
             return
-        self._notify_subscribers(mid.priority, pgn_value, src_address,
+        self.__notify_subscribers(mid.priority, pgn_value, src_address,
                                  dest_address, timestamp, data)
         self._snd_buffer[buffer_hash]['state'] = self.SendState.TRANSMISSION_FINISHED
         self._snd_buffer[buffer_hash]['deadline'] = time.time()
-        self._job_thread_wakeup()
+        self.__job_thread_wakeup()
 
     def _handle_abort(self, src_address, dest_address):
         # Either party may abort. Drop any matching session in either direction.
@@ -397,67 +397,67 @@ class ISO11783_ETP:
             self._snd_buffer[snd_hash]['deadline'] = time.time()
         if rcv_hash in self._rcv_buffer:
             del self._rcv_buffer[rcv_hash]
-        self._job_thread_wakeup()
+        self.__job_thread_wakeup()
 
     # --- ETP.CM and ETP.DT senders -----------------------------------------
     # Multi-byte fields are little-endian; PGN field carries PS=0.
 
-    def _send_rts(self, src_address, dest_address, priority, pgn_value, message_size):
+    def __send_rts(self, src_address, dest_address, priority, pgn_value, message_size):
         pgn = ParameterGroupNumber(0, self.PF_CM, dest_address)
         mid = MessageId(priority=priority, parameter_group_number=pgn.value,
                         source_address=src_address)
-        self._send_message(mid.can_id, True, [
+        self.__send_message(mid.can_id, True, [
             self.ControlByte.RTS,
             message_size & 0xFF, (message_size >> 8) & 0xFF,
             (message_size >> 16) & 0xFF, (message_size >> 24) & 0xFF,
             pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, (pgn_value >> 16) & 0xFF,
         ])
 
-    def _send_cts(self, src_address, dest_address, num_packets, next_packet, pgn_value):
+    def __send_cts(self, src_address, dest_address, num_packets, next_packet, pgn_value):
         pgn = ParameterGroupNumber(0, self.PF_CM, dest_address)
         mid = MessageId(priority=7, parameter_group_number=pgn.value,
                         source_address=src_address)
-        self._send_message(mid.can_id, True, [
+        self.__send_message(mid.can_id, True, [
             self.ControlByte.CTS,
             num_packets & 0xFF,
             next_packet & 0xFF, (next_packet >> 8) & 0xFF, (next_packet >> 16) & 0xFF,
             pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, (pgn_value >> 16) & 0xFF,
         ])
 
-    def _send_dpo(self, src_address, dest_address, num_packets, offset, pgn_value):
+    def __send_dpo(self, src_address, dest_address, num_packets, offset, pgn_value):
         pgn = ParameterGroupNumber(0, self.PF_CM, dest_address)
         mid = MessageId(priority=7, parameter_group_number=pgn.value,
                         source_address=src_address)
-        self._send_message(mid.can_id, True, [
+        self.__send_message(mid.can_id, True, [
             self.ControlByte.DPO,
             num_packets & 0xFF,
             offset & 0xFF, (offset >> 8) & 0xFF, (offset >> 16) & 0xFF,
             pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, (pgn_value >> 16) & 0xFF,
         ])
 
-    def _send_eom_ack(self, src_address, dest_address, message_size, pgn_value):
+    def __send_eom_ack(self, src_address, dest_address, message_size, pgn_value):
         pgn = ParameterGroupNumber(0, self.PF_CM, dest_address)
         mid = MessageId(priority=7, parameter_group_number=pgn.value,
                         source_address=src_address)
-        self._send_message(mid.can_id, True, [
+        self.__send_message(mid.can_id, True, [
             self.ControlByte.EOM_ACK,
             message_size & 0xFF, (message_size >> 8) & 0xFF,
             (message_size >> 16) & 0xFF, (message_size >> 24) & 0xFF,
             pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, (pgn_value >> 16) & 0xFF,
         ])
 
-    def _send_abort(self, src_address, dest_address, reason, pgn_value):
+    def __send_abort(self, src_address, dest_address, reason, pgn_value):
         pgn = ParameterGroupNumber(0, self.PF_CM, dest_address)
         mid = MessageId(priority=7, parameter_group_number=pgn.value,
                         source_address=src_address)
-        self._send_message(mid.can_id, True, [
+        self.__send_message(mid.can_id, True, [
             self.ControlByte.ABORT,
             reason, 0xFF, 0xFF, 0xFF,
             pgn_value & 0xFF, (pgn_value >> 8) & 0xFF, (pgn_value >> 16) & 0xFF,
         ])
 
-    def _send_dt(self, src_address, dest_address, payload):
+    def __send_dt(self, src_address, dest_address, payload):
         pgn = ParameterGroupNumber(0, self.PF_DT, dest_address)
         mid = MessageId(priority=7, parameter_group_number=pgn.value,
                         source_address=src_address)
-        self._send_message(mid.can_id, True, payload)
+        self.__send_message(mid.can_id, True, payload)

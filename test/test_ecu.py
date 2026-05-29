@@ -3,6 +3,7 @@ import time
 import can
 import pytest
 import j1939
+from j1939.iso11783_etp import ISO11783_ETP
 from test_helpers.feeder import Feeder
 from test_helpers.conftest import feeder
 
@@ -318,6 +319,121 @@ def test_peer_to_peer_send_etp(etp_feeder):
 
     pdu = (Feeder.MsgType.PDU, pgn, payload)
     feeder.send(pdu, src, dst)
+
+
+def _etp_abort_payload(reason, pgn):
+    return [255, reason, 0xFF, 0xFF, 0xFF] + _etp_pgn_bytes(pgn)
+
+
+def _drive_until_drained(feeder, timeout=3.0):
+    feeder.ecu.subscribe(feeder._on_message)
+    feeder._inject_messages_into_ecu()
+    deadline = time.time() + timeout
+    while feeder.can_messages and time.time() < deadline:
+        time.sleep(0.05)
+    feeder.ecu.unsubscribe(feeder._on_message)
+    assert not feeder.can_messages, f"expected messages not consumed: {feeder.can_messages}"
+
+
+def test_etp_receive_rts_size_too_large(etp_feeder):
+    """RTS with size > MAX_MESSAGE_SIZE must be aborted with ANY_OTHER_REASON."""
+    feeder = etp_feeder
+    feeder.accept_all_messages()
+    src, dst = 0x01, 0x02
+    pgn = 0xDF00
+    bad_size = ISO11783_ETP.MAX_MESSAGE_SIZE + 1
+    cm_id_rx = 0x00C80000 | (dst << 8) | src
+    cm_id_tx = 0x1CC80000 | (src << 8) | dst
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [20] + _etp_size_bytes(bad_size) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         _etp_abort_payload(ISO11783_ETP.AbortReason.ANY_OTHER_REASON, pgn), 0.0),
+    ]
+    feeder.pdus = []
+    _drive_until_drained(feeder)
+
+
+def test_etp_receive_duplicate_rts_aborts_busy(etp_feeder):
+    """A second RTS while an ETP session is active must yield a BUSY abort."""
+    feeder = etp_feeder
+    feeder.accept_all_messages()
+    src, dst = 0x01, 0x02
+    pgn = 0xDF00
+    size = 2000
+    burst = min(255, (size + 6) // 7)
+    cm_id_rx = 0x00C80000 | (dst << 8) | src
+    cm_id_tx = 0x1CC80000 | (src << 8) | dst
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [20] + _etp_size_bytes(size) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         [21, burst] + _etp_offset_bytes(1) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [20] + _etp_size_bytes(size) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         _etp_abort_payload(ISO11783_ETP.AbortReason.BUSY, pgn), 0.0),
+    ]
+    feeder.pdus = []
+    _drive_until_drained(feeder)
+
+
+def test_etp_receive_dpo_offset_mismatch(etp_feeder):
+    """DPO with offset != expected must be aborted with BAD_DPO_OFFSET."""
+    feeder = etp_feeder
+    feeder.accept_all_messages()
+    src, dst = 0x01, 0x02
+    pgn = 0xDF00
+    size = 2000
+    burst = min(255, (size + 6) // 7)
+    cm_id_rx = 0x00C80000 | (dst << 8) | src
+    cm_id_tx = 0x1CC80000 | (src << 8) | dst
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [20] + _etp_size_bytes(size) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         [21, burst] + _etp_offset_bytes(1) + _etp_pgn_bytes(pgn), 0.0),
+        # Expected DPO offset is 0; send 99 instead.
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [22, burst] + _etp_offset_bytes(99) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         _etp_abort_payload(ISO11783_ETP.AbortReason.BAD_DPO_OFFSET, pgn), 0.0),
+    ]
+    feeder.pdus = []
+    _drive_until_drained(feeder)
+
+
+def test_etp_receive_dt_bad_sequence(etp_feeder):
+    """DT with non-monotonic sequence number must be aborted with BAD_SEQUENCE."""
+    feeder = etp_feeder
+    feeder.accept_all_messages()
+    src, dst = 0x01, 0x02
+    pgn = 0xDF00
+    size = 2000
+    burst = min(255, (size + 6) // 7)
+    cm_id_rx = 0x00C80000 | (dst << 8) | src
+    cm_id_tx = 0x1CC80000 | (src << 8) | dst
+    dt_id_rx = 0x00C70000 | (dst << 8) | src
+    payload = [(i & 0xFF) for i in range(size)]
+
+    feeder.can_messages = [
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [20] + _etp_size_bytes(size) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         [21, burst] + _etp_offset_bytes(1) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANRX, cm_id_rx,
+         [22, burst] + _etp_offset_bytes(0) + _etp_pgn_bytes(pgn), 0.0),
+        (Feeder.MsgType.CANRX, dt_id_rx, [1] + payload[0:7], 0.0),
+        # Skip seq 2 to trigger BAD_SEQUENCE
+        (Feeder.MsgType.CANRX, dt_id_rx, [3] + payload[7:14], 0.0),
+        (Feeder.MsgType.CANTX, cm_id_tx,
+         _etp_abort_payload(ISO11783_ETP.AbortReason.BAD_SEQUENCE, pgn), 0.0),
+    ]
+    feeder.pdus = []
+    _drive_until_drained(feeder)
 
 
 def test_subscribe(feeder):

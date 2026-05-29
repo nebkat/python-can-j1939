@@ -119,8 +119,8 @@ class J1939_21:
             # init sequence
             # known limitation: only one BAM can be sent in parallel to a destination node
             buffer_hash = self._buffer_hash(src_address, dest_address)
-            if buffer_hash in self._snd_buffer:
-                # There is already a sequence active for this pair
+            if buffer_hash in self._snd_buffer or buffer_hash in self.etp._snd_buffer:
+                # There is already a sequence active for this pair (TP or ETP)
                 return False
             message_size = len(data)
             num_packets = int(message_size / 7) if (message_size % 7 == 0) else int(message_size / 7) + 1
