@@ -1,6 +1,7 @@
 from .parameter_group_number import ParameterGroupNumber
 from .message_id import MessageId
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,11 @@ class J1939_21:
         TRANSMISSION_FINISHED   = 3 # finished, remove buffer
 
     def __init__(self, send_message, job_thread_wakeup, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable):
+        # Guards the session buffers, which the CAN notifier thread (notify),
+        # the job thread (async_job_thread) and application threads (send_pgn)
+        # all reach
+        self._lock = threading.RLock()
+
         # Receive buffers
         self._rcv_buffer = {}
         # Send buffers
@@ -90,6 +96,10 @@ class J1939_21:
         return ((src_address & 0xFF) << 8) | (dest_address & 0xFF)
 
     def send_pgn(self, data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit, frame_format):
+        with self._lock:
+            return self._send_pgn(data_page, pdu_format, pdu_specific, priority, src_address, data)
+
+    def _send_pgn(self, data_page, pdu_format, pdu_specific, priority, src_address, data):
         pgn = ParameterGroupNumber(data_page, pdu_format, pdu_specific)
         if len(data) <= 8:
             # send normal message
@@ -155,6 +165,10 @@ class J1939_21:
 
 
     def async_job_thread(self, now):
+        with self._lock:
+            return self._async_job_thread(now)
+
+    def _async_job_thread(self, now):
 
         next_wakeup = now + 5.0 # wakeup in 5 seconds
 
@@ -477,7 +491,10 @@ class J1939_21:
             seconds.
             Where possible this will be timestamped in hardware.
         """
+        with self._lock:
+            self._notify(can_id, data, timestamp)
 
+    def _notify(self, can_id, data, timestamp):
         mid = MessageId(can_id=can_id)
         pgn = ParameterGroupNumber()
         pgn.from_message_id(mid)
