@@ -194,12 +194,8 @@ class J1939_21:
                         while buf['next_packet_to_send'] < buf['num_packages']:
                             package = buf['next_packet_to_send']
                             offset = package * 7
-                            data = buf['data'][offset:]
-                            if len(data)>7:
-                                data = data[:7]
-                            else:
-                                while len(data)<7:
-                                    data.append(255)
+                            data = list(buf['data'][offset:offset + 7])
+                            data += [255] * (7 - len(data))
                             data.insert(0, package+1)
 
                             # modify the snd_buffer state in anticipation
@@ -229,12 +225,8 @@ class J1939_21:
                     elif buf['state'] == self.SendBufferState.SENDING_BM:
                         # send next broadcast message...
                         offset = buf['next_packet_to_send'] * 7
-                        data = buf['data'][offset:]
-                        if len(data)>7:
-                            data = data[:7]
-                        else:
-                            while len(data)<7:
-                                data.append(255)
+                        data = list(buf['data'][offset:offset + 7])
+                        data += [255] * (7 - len(data))
                         data.insert(0, buf['next_packet_to_send']+1)
 
                         # modify the snd_buffer state in anticipation
@@ -318,8 +310,9 @@ class J1939_21:
                 return
             if num_packages == 0:
                 # SAE J1939/21
-                # receiver requests a pause
-                self._snd_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.Th
+                # receiver requests a pause: it repeats the hold every Th,
+                # and the originator waits up to T4 for the next CTS
+                self._snd_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T4
                 self.__job_thread_wakeup()
                 return
 
