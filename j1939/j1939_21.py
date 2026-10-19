@@ -164,6 +164,17 @@ class J1939_21:
         return True
 
 
+    def drop_sessions(self, address):
+        """Forget every TP session in which ``address`` is the local end,
+        without sending anything: the address is no longer ours."""
+        with self._lock:
+            for bufid in list(self._snd_buffer):
+                if self._snd_buffer[bufid]['src_address'] == address:
+                    del self._snd_buffer[bufid]
+            for bufid in list(self._rcv_buffer):
+                if self._rcv_buffer[bufid]['dest_address'] == address:
+                    del self._rcv_buffer[bufid]
+
     def async_job_thread(self, now):
         with self._lock:
             return self._async_job_thread(now)
