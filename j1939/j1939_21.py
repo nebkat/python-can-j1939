@@ -187,6 +187,14 @@ class J1939_21:
         return True
 
 
+    def has_send_session(self, src_address, dest_address):
+        """Whether a TP or ETP send from src_address to dest_address is still
+        open: send_pgn returns once one starts, and refuses another to the same
+        destination until it has ended."""
+        with self._lock:
+            return (self._buffer_hash(src_address, dest_address) in self._snd_buffer
+                    or self.etp.has_send_session(src_address, dest_address))
+
     def drop_sessions(self, address):
         """Forget every TP and ETP session in which ``address`` is the local
         end, without sending anything: the address is no longer ours."""

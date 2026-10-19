@@ -245,6 +245,12 @@ class ElectronicControlUnit:
         """
         return self.j1939_dll.send_pgn(data_page, pdu_format, pdu_specific, priority, src_address, data, time_limit, frame_format)
 
+    def has_send_session(self, src_address, dest_address):
+        """Whether a multi-packet send from src_address to dest_address is
+        still open ('j1939-21' only; always False otherwise)."""
+        has_send_session = getattr(self.j1939_dll, 'has_send_session', None)
+        return bool(has_send_session and has_send_session(src_address, dest_address))
+
     def send_message(self, can_id, extended_id, data, fd_format=False):
         """Send a raw CAN message to the bus.
 

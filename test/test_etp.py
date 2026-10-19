@@ -357,6 +357,19 @@ def test_tp_and_etp_to_different_peers(station):
     assert station.ecu.send_pgn(0, PGN >> 8, PEER + 1, 6, LOCAL, payload_of(2000))
 
 
+def test_has_send_session(station):
+    assert not station.ecu.has_send_session(LOCAL, PEER)
+    assert station.ecu.send_pgn(0, PGN >> 8, PEER, 6, LOCAL, payload_of(100))
+    assert station.ecu.has_send_session(LOCAL, PEER)
+    station.skip(1)
+    assert station.ecu.send_pgn(0, PGN >> 8, PEER + 1, 6, LOCAL, payload_of(2000))
+    assert station.ecu.has_send_session(LOCAL, PEER + 1)
+    station.skip(1)
+    station.feed(cm_id(PEER + 1, LOCAL), abort(R.RESOURCES))
+    station.quiet(0.2)
+    assert not station.ecu.has_send_session(LOCAL, PEER + 1)
+
+
 def test_drop_sessions_on_address_loss(station):
     start_send(station, 2000)
     station.feed(cm_id(PEER, LOCAL), rts(2000, OTHER_PGN))
