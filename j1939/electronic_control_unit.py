@@ -17,10 +17,13 @@ class ElectronicControlUnit:
     """ElectronicControlUnit (ECU) holding one or more ControllerApplications (CAs)."""
 
 
-    def __init__(self, data_link_layer='j1939-21', max_cmdt_packets=1, minimum_tp_rts_cts_dt_interval=None, minimum_tp_bam_dt_interval=None, send_message=None):
+    def __init__(self, data_link_layer='j1939-21', max_cmdt_packets=1, minimum_tp_rts_cts_dt_interval=None, minimum_tp_bam_dt_interval=None, send_message=None, max_etp_cmdt_packets=16):
         """
         :param data_link_layer:
             specify data-link-layer, 'j1939-21' or 'j1939-22'
+        :param max_etp_cmdt_packets:
+            number of packets requested per CTS when receiving with the
+            ISO 11783-3 Extended Transport Protocol ('j1939-21' only)
         """
         if send_message:
             self.send_message = send_message
@@ -32,10 +35,12 @@ class ElectronicControlUnit:
 
         if max_cmdt_packets > 0xFF:
             raise ValueError("max number of segments that can be sent is 0xFF")
+        if not 1 <= max_etp_cmdt_packets <= 0xFF:
+            raise ValueError("max number of ETP packets per CTS must be 1..0xFF")
 
         # set data link layer
         if data_link_layer == 'j1939-21':
-            self.j1939_dll = J1939_21(self.send_message, self._job_thread_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
+            self.j1939_dll = J1939_21(self.send_message, self._job_thread_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable, max_etp_cmdt_packets)
         elif data_link_layer == 'j1939-22':
             self.j1939_dll = J1939_22(self.send_message, self._job_thread_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
         else:

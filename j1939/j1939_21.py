@@ -1,5 +1,6 @@
 from .parameter_group_number import ParameterGroupNumber
 from .message_id import MessageId
+from .iso11783_etp import ISO11783_ETP
 import logging
 import threading
 import time
@@ -7,6 +8,9 @@ import time
 logger = logging.getLogger(__name__)
 
 class J1939_21:
+    # Maximum size of a TP session (SAE J1939-21 / ISO 11783-3 6.10)
+    TP_MAX_MESSAGE_SIZE = 1785
+
     class ConnectionMode:
         RTS = 16
         CTS = 17
@@ -39,7 +43,7 @@ class J1939_21:
         SENDING_BM              = 2 # sending broadcast packages
         TRANSMISSION_FINISHED   = 3 # finished, remove buffer
 
-    def __init__(self, send_message, job_thread_wakeup, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable):
+    def __init__(self, send_message, job_thread_wakeup, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable, max_etp_cmdt_packets=ISO11783_ETP.DEFAULT_MAX_CTS_PACKETS):
         # Guards the session buffers, which the CAN notifier thread (notify),
         # the job thread (async_job_thread) and application threads (send_pgn)
         # all reach
@@ -69,6 +73,16 @@ class J1939_21:
         self.__send_message = send_message
         self.__notify_subscribers = notify_subscribers
         self.__ecu_is_message_acceptable = ecu_is_message_acceptable
+
+        # ISO 11783-3 Extended Transport Protocol (for messages > 1785 bytes)
+        self.etp = ISO11783_ETP(
+            send_message=send_message,
+            job_thread_wakeup=job_thread_wakeup,
+            notify_subscribers=notify_subscribers,
+            max_cmdt_packets=max_etp_cmdt_packets,
+            minimum_dt_interval=minimum_tp_rts_cts_dt_interval,
+            tp_receiving=lambda src_address, dest_address: self._buffer_hash(src_address, dest_address) in self._rcv_buffer,
+        )
 
     def add_ca(self, ca):
         self._cas.append(ca)
@@ -116,14 +130,19 @@ class J1939_21:
             # init sequence
             # known limitation: only one BAM can be sent in parallel to a destination node
             buffer_hash = self._buffer_hash(src_address, dest_address)
-            if buffer_hash in self._snd_buffer:
-                # There is already a sequence active for this pair
+            if buffer_hash in self._snd_buffer or self.etp.has_send_session(src_address, dest_address):
+                # There is already a sequence active for this pair (TP or ETP)
                 return False
             message_size = len(data)
             num_packets = int(message_size / 7) if (message_size % 7 == 0) else int(message_size / 7) + 1
 
             # if the PF is between 240 and 255, the message can only be broadcast
             if dest_address == ParameterGroupNumber.Address.GLOBAL:
+                # BAM is bounded by TP (ISO 11783-3 6.10) - no broadcast variant for ETP
+                if message_size > self.TP_MAX_MESSAGE_SIZE:
+                    logger.error("Broadcast message size %d exceeds TP limit (%d); ETP has no broadcast variant",
+                                 message_size, self.TP_MAX_MESSAGE_SIZE)
+                    return False
                 # send BAM
                 self.__send_tp_bam(src_address, priority, pgn.value, message_size, num_packets)
 
@@ -140,6 +159,10 @@ class J1939_21:
                         'dest_address' : ParameterGroupNumber.Address.GLOBAL,
                         'next_packet_to_send' : 0,
                     }
+            elif message_size > self.TP_MAX_MESSAGE_SIZE:
+                # ISO 11783-3 6.11 Extended Transport Protocol
+                if not self.etp.start_send(src_address, pdu_specific, priority, pgn.value, data):
+                    return False
             else:
                 # send RTS/CTS
                 pgn.pdu_specific = 0  # this is 0 for peer-to-peer transfer
@@ -165,8 +188,8 @@ class J1939_21:
 
 
     def drop_sessions(self, address):
-        """Forget every TP session in which ``address`` is the local end,
-        without sending anything: the address is no longer ours."""
+        """Forget every TP and ETP session in which ``address`` is the local
+        end, without sending anything: the address is no longer ours."""
         with self._lock:
             for bufid in list(self._snd_buffer):
                 if self._snd_buffer[bufid]['src_address'] == address:
@@ -174,6 +197,7 @@ class J1939_21:
             for bufid in list(self._rcv_buffer):
                 if self._rcv_buffer[bufid]['dest_address'] == address:
                     del self._rcv_buffer[bufid]
+            self.etp.drop_sessions(address)
 
     def async_job_thread(self, now):
         with self._lock:
@@ -276,6 +300,11 @@ class J1939_21:
                         logger.critical("unknown SendBufferState %d", buf['state'])
                         del self._snd_buffer[bufid]
 
+        # ETP runs its own send/receive state machine alongside TP.
+        etp_wakeup = self.etp.async_job_thread(now)
+        if etp_wakeup < next_wakeup:
+            next_wakeup = etp_wakeup
+
         return next_wakeup
 
 
@@ -301,7 +330,7 @@ class J1939_21:
             num_packages = data[3]
             max_num_packages = data[4] # Maximum number of segments that can be sent in response to one CTS.
             buffer_hash = self._buffer_hash(src_address, dest_address)
-            if buffer_hash in self._rcv_buffer:
+            if buffer_hash in self._rcv_buffer or self.etp.has_receive_session(src_address, dest_address):
                 # according SAE J1939-21 we have to send an ABORT if an active
                 # transmission is already established
                 self.__send_tp_abort(dest_address, src_address, self.ConnectionAbortReason.BUSY, pgn)
@@ -542,6 +571,10 @@ class J1939_21:
             self._process_tp_cm(mid, dest_address, data, timestamp)
         elif pgn_value == ParameterGroupNumber.PGN.DATATRANSFER:
             self._process_tp_dt(mid, dest_address, data, timestamp)
+        elif pgn_value == ParameterGroupNumber.PGN.ETP_CM:
+            self.etp.process_cm(mid, dest_address, data, timestamp)
+        elif pgn_value == ParameterGroupNumber.PGN.ETP_DT:
+            self.etp.process_dt(mid, dest_address, data, timestamp)
         else:
             self.__notify_subscribers(mid.priority, pgn_value, mid.source_address, dest_address, timestamp, data)
             return
