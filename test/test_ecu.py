@@ -143,7 +143,8 @@ def test_peer_to_peer_send_long(feeder):
         (Feeder.MsgType.CANRX, 0x1CEC909B, [19, 20, 0, 3, 255, 0, 223, 0], 0.0),        # TP.CM EOMACK
     ]
 
-    feeder.pdus = [(Feeder.MsgType.PDU, 57088, None)]
+    # the EOM_ACK reaches subscribers as its CM frame, under the transferred PGN
+    feeder.pdus = [(Feeder.MsgType.PDU, 57088, [19, 20, 0, 3, 255, 0, 223, 0])]
 
     pdu = (Feeder.MsgType.PDU, 57088, [1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6])
 
