@@ -317,7 +317,13 @@ class ElectronicControlUnit:
 
             now = time.time()
 
-            next_wakeup = self.j1939_dll.async_job_thread(now)
+            try:
+                next_wakeup = self.j1939_dll.async_job_thread(now)
+            except Exception:
+                # A failure in one session must not stop the thread that runs
+                # every timeout and timer
+                logger.exception("Data link layer job failed")
+                next_wakeup = now + 0.1
 
             # check timer events
             for event in self._timer_events:
