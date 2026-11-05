@@ -181,3 +181,49 @@ def test_stop_method(feeder):
     assert new_ca.started
     new_ca.stop()
     assert not new_ca.started
+
+
+def claim_state_after_announce(feeder, address, arbitrary_address_capable, **ca_kwargs):
+    """The CA's state just after it announces `address`, and once the veto time has passed."""
+    name = j1939.Name(
+        arbitrary_address_capable=arbitrary_address_capable,
+        industry_group=j1939.Name.IndustryGroup.Industrial,
+        vehicle_system_instance=2,
+        vehicle_system=127,
+        function=201,
+        function_instance=16,
+        ecu_instance=2,
+        manufacturer_code=666,
+        identity_number=1234567,
+    )
+    feeder.can_messages = [
+        (Feeder.MsgType.CANTX, 0x18EEFF00 | address, list(name.bytes), 0.0),    # Address Claimed
+    ]
+    new_ca = j1939.ControllerApplication(name, address, **ca_kwargs)
+    feeder.ecu.add_ca(controller_application=new_ca)
+    new_ca.start(claim_delay=0.0)
+    time.sleep(0.100)
+    announced = new_ca.state
+    time.sleep(0.500)
+    return announced, new_ca.state
+
+
+def test_addr_claim_fixed_low_address_is_used_at_once(feeder):
+    """J1939-81: a fixed-address CA may use an address in 0..127 straight after claiming it"""
+    announced, settled = claim_state_after_announce(feeder, 0x10, arbitrary_address_capable=0)
+    assert announced == j1939.ControllerApplication.State.NORMAL
+    assert settled == j1939.ControllerApplication.State.NORMAL
+
+
+def test_addr_claim_fixed_high_address_is_used_at_once(feeder):
+    """J1939-81: a fixed-address CA may use an address in 248..253 straight after claiming it"""
+    announced, settled = claim_state_after_announce(feeder, 0xF9, arbitrary_address_capable=0)
+    assert announced == j1939.ControllerApplication.State.NORMAL
+    assert settled == j1939.ControllerApplication.State.NORMAL
+
+
+def test_addr_claim_arbitrary_reserved_address_waits_for_veto(feeder):
+    """J1939-81: an arbitrary address capable CA waits out the veto time at any address"""
+    announced, settled = claim_state_after_announce(feeder, 0xF9, arbitrary_address_capable=1)
+    assert announced == j1939.ControllerApplication.State.WAIT_VETO
+    assert settled == j1939.ControllerApplication.State.NORMAL

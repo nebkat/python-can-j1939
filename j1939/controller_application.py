@@ -142,17 +142,25 @@ class ControllerApplication:
             self._started = False
             self._ecu.remove_timer(self._process_claim_async)
 
+    def _claim_waits_for_veto(self, address):
+        """Whether a claim of `address` must stand uncontested for the veto time before the
+        address is used. J1939-81 lets only a fixed-address CA, one whose NAME is not arbitrary
+        address capable, use an address in 0..127 or 248..253 at once.
+        """
+        if self._name.arbitrary_address_capable:
+            return True
+        return 128 <= address <= 247
+
     def _process_claim_async(self, cookie):
         time_to_sleep = 0.500
         if self._device_address_state == ControllerApplication.State.NONE:
             if self._device_address_preferred != None:
                 self._device_address_announced = self._device_address_preferred
                 self._send_address_claimed(self._device_address_announced)
-                if self._device_address_announced > 127 and self._device_address_announced < 248:
+                if self._claim_waits_for_veto(self._device_address_announced):
                     self._device_address_state = ControllerApplication.State.WAIT_VETO
                     time_to_sleep = ControllerApplication.ClaimTimeout.VETO
                 else:
-                    # addresses from 0..127 and 248..253 should start immediately
                     self._device_address = self._device_address_announced
                     self._device_address_state = ControllerApplication.State.NORMAL
         elif self._device_address_state == ControllerApplication.State.WAIT_VETO:
