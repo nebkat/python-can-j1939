@@ -33,7 +33,7 @@ class ControllerApplication:
         MAX_16 = 0xFAFF
         MAX_16_ARR = [0xFA, 0xFF]
 
-    def __init__(self, name, device_address_preferred=None, bypass_address_claim=False):
+    def __init__(self, name, device_address_preferred=None, bypass_address_claim=False, network_management='j1939-81'):
         """
         :param name:
             A j1939 :class:`j1939.Name` instance
@@ -41,8 +41,14 @@ class ControllerApplication:
             The device_address this CA should claim on the bus.
         :param bypass_address_claim:
             Flag to bypass address claim procedure
+        :param network_management:
+            The address claim rules the CA follows: 'j1939-81', or 'iso11783-5', under which
+            every claim waits out the veto time before the address is used
         """
+        if network_management not in ('j1939-81', 'iso11783-5'):
+            raise ValueError(f"network_management must be 'j1939-81' or 'iso11783-5', not {network_management!r}")
         self._name = name
+        self._network_management = network_management
         self._device_address_preferred = device_address_preferred
         if bypass_address_claim and (device_address_preferred is not None):
             self._device_address_announced = device_address_preferred
@@ -145,9 +151,9 @@ class ControllerApplication:
     def _claim_waits_for_veto(self, address):
         """Whether a claim of `address` must stand uncontested for the veto time before the
         address is used. J1939-81 lets only a fixed-address CA, one whose NAME is not arbitrary
-        address capable, use an address in 0..127 or 248..253 at once.
+        address capable, use an address in 0..127 or 248..253 at once; ISO 11783-5 lets no CA.
         """
-        if self._name.arbitrary_address_capable:
+        if self._network_management == 'iso11783-5' or self._name.arbitrary_address_capable:
             return True
         return 128 <= address <= 247
 

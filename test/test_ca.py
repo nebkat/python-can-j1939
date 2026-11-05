@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 import j1939
 from test_helpers.feeder import Feeder
 from test_helpers.conftest import feeder
@@ -227,3 +229,17 @@ def test_addr_claim_arbitrary_reserved_address_waits_for_veto(feeder):
     announced, settled = claim_state_after_announce(feeder, 0xF9, arbitrary_address_capable=1)
     assert announced == j1939.ControllerApplication.State.WAIT_VETO
     assert settled == j1939.ControllerApplication.State.NORMAL
+
+
+def test_addr_claim_iso11783_fixed_address_waits_for_veto(feeder):
+    """ISO 11783-5: every CA waits out the veto time, a fixed-address one at 0..127 too"""
+    announced, settled = claim_state_after_announce(feeder, 0x10, arbitrary_address_capable=0, network_management='iso11783-5')
+    assert announced == j1939.ControllerApplication.State.WAIT_VETO
+    assert settled == j1939.ControllerApplication.State.NORMAL
+
+
+def test_unknown_network_management_is_refused():
+    """A CA refuses address claim rules it does not know"""
+    name = j1939.Name(arbitrary_address_capable=1, manufacturer_code=666, identity_number=1)
+    with pytest.raises(ValueError):
+        j1939.ControllerApplication(name, 0x10, network_management='iso11783')
